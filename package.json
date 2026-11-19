@@ -1,0 +1,17 @@
+{
+  "name": "wizard-redteam",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18.3" },
+  "scripts": {
+    "attack": "node redteam.mjs",
+    "tactics": "node redteam.mjs --list-tactics",
+    "test": "node --test selftest.mjs",
+    "lint:contracts": "genvm-lint check wizard_of_coin.py && genvm-lint check wizard_attacker.py",
+    "test:contracts": "pytest -q tests"
+  },
+  "dependencies": {
+    "genlayer-js": "^2.0.0-rc.1"
+  }
+}

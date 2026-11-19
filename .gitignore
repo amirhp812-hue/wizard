@@ -1,0 +1,11 @@
+node_modules/
+.wizard-state.json
+report-*.json
+report-*.md
+results-*.jsonl
+breaches-*.json
+run.log
+__pycache__/
+.pytest_cache/
+artifacts/
+.env

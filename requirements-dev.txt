@@ -1,0 +1,4 @@
+# Optional: offline checks for the two contracts (no network, no GEN needed)
+genvm-linter
+genlayer-test
+pytest
