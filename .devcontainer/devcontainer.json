@@ -1,0 +1,11 @@
+{
+  "name": "wizard-redteam",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" }
+  },
+  "postCreateCommand": "npm install && (pip install -r requirements-dev.txt || echo 'optional contract tests not installed')",
+  "customizations": {
+    "vscode": { "extensions": ["ms-python.python"] }
+  }
+}
