@@ -117,6 +117,7 @@ export async function runArena(cfg) {
       } catch (e) {
         lastErr = oneLine(e?.shortMessage || e?.message || e);
         if (FATAL_RE.test(lastErr)) break;
+        if (tries < cfg.forgeRetries) await new Promise((r) => setTimeout(r, 8000 * tries));
       }
     }
     rec.forgeTries = tries;

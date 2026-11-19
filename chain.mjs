@@ -143,13 +143,16 @@ export async function connect(opt, { needAttacker = true, log = console.log, war
   }
 
   // ---- tx helpers
+  let cachedFees = null;
   const feesFor = async (client) => {
+    if (cachedFees) return cachedFees;
     const est = await client.estimateTransactionFees({
       leaderTimeunitsAllocation: LEADER_TU,
       validatorTimeunitsAllocation: VALIDATOR_TU,
       rotations: ROTATIONS,
     });
-    return { distribution: est.distribution, feeValue: est.feeValue };
+    cachedFees = { distribution: est.distribution, feeValue: est.feeValue };
+    return cachedFees;
   };
   const waitAccepted = (client, hash) =>
     client.waitForTransactionReceipt({ hash, status: TransactionStatus.ACCEPTED, retries: RETRIES, interval: INTERVAL });
