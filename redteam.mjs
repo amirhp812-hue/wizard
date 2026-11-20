@@ -17,6 +17,36 @@ import { TACTICS, selectTactics } from "./tactics.mjs";
 import { makeSessions, runArena, runReplay, buildReport, breachFile } from "./arena.mjs";
 import { connect, wizardPromptText, SetupError, DEFAULT_RPC } from "./chain.mjs";
 
+// Turn a prior report-*.json or breaches-*.json into { [tacticId]: string[] }, so a new run can push harder
+// on exactly the tactics that came closest instead of starting cold again. report-*.json keeps only rounds
+// that breached or whose closeness (the attacker's own 0-10 self-rating) met the threshold, best first;
+// breaches-*.json (no closeness field) keeps every breach. Both are the exact files this script already writes.
+function loadSeeds(file, minCloseness, perTactic) {
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new SetupError(`--seed-from ${file}: ${e.message}`);
+  }
+  const out = {};
+  const add = (tactic, text) => {
+    if (!tactic || typeof text !== "string" || !text.trim()) return;
+    const arr = (out[tactic] ??= []);
+    if (arr.length < perTactic && !arr.includes(text)) arr.push(text);
+  };
+  if (Array.isArray(raw)) {
+    for (const r of raw) add(r?.tactic, r?.text); // breaches-*.json
+  } else if (raw && Array.isArray(raw.rounds)) {
+    const picked = raw.rounds // report-*.json
+      .filter((r) => r?.type === "round" && r.attack && (r.verdict === "BREACH" || (r.closeness ?? -1) >= minCloseness))
+      .sort((a, b) => (b.verdict === "BREACH") - (a.verdict === "BREACH") || (b.closeness ?? 10) - (a.closeness ?? 10));
+    for (const r of picked) add(r.tactic, r.attack);
+  } else {
+    throw new SetupError(`${file} is not a report-*.json or breaches-*.json produced by this script.`);
+  }
+  return out;
+}
+
 const HELP = `Usage: node redteam.mjs [options]
 
 Attack
@@ -27,6 +57,11 @@ Attack
   --knowledge rules|blind rules = the attacker reads the wizard's full prompt and guard (hardest test)
                           blind = it only sees the wizard's replies              (default rules)
   --window <n>            earlier rounds shown to the attacker                   (default 4)
+  --seed-from <file>      report-*.json or breaches-*.json from an earlier run: push harder on
+                          whatever tactic came closest there, by feeding its real near-miss
+                          message(s) as round-1 inspiration (never resent verbatim)
+  --seed-min-closeness <n> report-*.json rounds need this attacker-rated closeness to seed (default 6)
+  --seed-per-tactic <n>   max seed messages kept per tactic                       (default 2)
   --keep-going            continue a session after it wins (default: it stops)
   --stop-all              stop every session after the first breach
   --forge-retries <n>     re-ask when the attacker model refuses or fails        (default 3)
@@ -66,6 +101,9 @@ try {
       sessions: { type: "string", default: "8" },
       rounds: { type: "string", default: "5" },
       window: { type: "string", default: "4" },
+      "seed-from": { type: "string" },
+      "seed-min-closeness": { type: "string", default: "6" },
+      "seed-per-tactic": { type: "string", default: "2" },
       tactics: { type: "string" },
       "list-tactics": { type: "boolean", default: false },
       knowledge: { type: "string", default: "rules" },
@@ -138,7 +176,13 @@ try {
       wizardRules = wizardPromptText(fs.readFileSync(opt.contract, "utf8"), conn.guard) ?? "";
       if (!wizardRules) console.warn(`! could not read STYLE/FORMAT out of ${opt.contract}; the attacker will play blind.`);
     }
-    const sessions = makeSessions(tactics, sessionCount);
+    let seeds;
+    if (opt["seed-from"]) {
+      seeds = loadSeeds(opt["seed-from"], int(opt["seed-min-closeness"], 6), int(opt["seed-per-tactic"], 2));
+      const n = Object.values(seeds).reduce((sum, a) => sum + a.length, 0);
+      log(`Seeded ${n} message(s) from ${opt["seed-from"]} across ${Object.keys(seeds).length} tactic(s).\n`);
+    }
+    const sessions = makeSessions(tactics, sessionCount, seeds);
     let resume = [];
     if (opt.resume) {
       for (const line of fs.readFileSync(opt.resume, "utf8").split("\n")) {

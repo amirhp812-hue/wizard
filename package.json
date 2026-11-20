@@ -1,11 +1,12 @@
 {
   "name": "wizard-redteam",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=18.3" },
   "scripts": {
     "attack": "node redteam.mjs",
+    "escalate": "node redteam.mjs --tactics decoy-substitution,precedent-pressure,compound-stack,dilution-overload,delimiter-spoof,consensus-split --sessions all --rounds 10 --concurrency 4 --window 6",
     "tactics": "node redteam.mjs --list-tactics",
     "test": "node --test selftest.mjs",
     "lint:contracts": "genvm-lint check wizard_of_coin.py && genvm-lint check wizard_attacker.py",
