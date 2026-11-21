@@ -369,6 +369,7 @@ export async function connect(opt, { needAttacker = true, log = console.log, war
         attack,
         analysis: String(res.analysis ?? ""),
         progress: Number(res.progress ?? 0) || 0,
+        evolvedAngle: String(res.evolved_angle ?? ""),
         meta: { txHash: hash, ...receiptInfo(receipt) },
       };
     },

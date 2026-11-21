@@ -23,9 +23,10 @@ validator nodes**, reads what the wizard replied, and writes a different attack 
 
 * `wizard_of_coin.py`: the contract under test (unchanged).
 * `wizard_attacker.py`: new contract. `forge_attack(attack_id, brief)` makes the current leader node's LLM write ONE
-  message from an angle, the wizard's own prompt (optional) and the earlier tries of that session. Validators only check
-  that the result is well formed, so each attack is authored by whichever validator model led that transaction: different
-  rounds, different models.
+  message from an angle, the wizard's own prompt (optional) and the earlier tries of that session — and, optionally,
+  a rewritten version of the angle itself once it judges the wizard showed real hesitation (see "Letting the
+  attacker evolve its own tactics" below). Validators only check that the result is well formed, so each attack is
+  authored by whichever validator model led that transaction: different rounds, different models.
 * `tactics.mjs`: 21 short attack *angles* (not prompts) that replace the old corpus. They carry what the old prompts
   taught: the scene-as-data pattern that beat the unguarded wizard, fake authority, output-field hijacks, delimiter
   spoofing, forged history, third-party recipients, languages, consensus splitting, a decoy-coin / precedent / stacked
@@ -88,7 +89,53 @@ intensify this, don't resend it" context — later rounds in the session go back
 the message itself (that exact text is already `used` on-chain); it only gives the attacker a stronger starting
 point than a bare angle description.
 
+## Letting the attacker evolve its own tactics
+
+`--seed-from` is still something *you* kick off between runs. There's also a second mechanism that needs no flag and
+runs by itself, inside a single session: `wizard_attacker.py`'s `forge_attack` now returns an optional
+`evolved_angle` alongside `attack`/`analysis`/`progress`. Every round, the SAME model call that rates how close the
+wizard's last reply came (`progress`) can also decide the angle text itself is now holding it back, and rewrite it —
+not a one-off message, but general reusable guidance for that whole family of mechanism, same shape as the angles in
+`tactics.mjs`. `arena.mjs` swaps it in for the rest of that session automatically, from the very next round:
+
+```
+round 1: angle = tactics.mjs's hand-written text
+round 2: wizard hesitates (progress 6) -> attacker writes evolved_angle -> angle is replaced from round 3 on
+round 3, 4, 5...: angle = the attacker's own rewritten version, compounding further if it evolves again
+```
+
+This needs the attacker contract redeployed once (`--deploy-attacker`), since the output schema changed. A
+run's "## Tactic evolutions" report section lists every proposal, and the script always writes the latest one per
+tactic to `evolved-angles-<time>.json`. Carry that into a **new** run, instead of starting the tactic cold again,
+with:
+
+```bash
+node redteam.mjs --evolve-from evolved-angles-<time>.json --tactics decoy-substitution,dilution-overload,delimiter-spoof
+# a report-*.json works too, if you'd rather point at that directly
+node redteam.mjs --evolve-from report-<time>.json
+```
+
+`--evolve-from` replaces the matching tactics' angle for the whole run, layered under `--seed-from` if you use both
+(seed adds round-1 examples; evolve replaces the base text they sit on). It never touches `tactics.mjs` itself —
+the hand-written baseline stays there as a known-good fallback you can always go back to.
+
+**Be honest with yourself about what this buys you.** An LLM proposing a sharper version of its own instructions is
+still just another LLM guess, from the same model family that just lost every round it's judging — it is not
+guaranteed to monotonically improve, and "it sounds more sophisticated" is not the same as "it works better." What
+this run showed is the exact lesson: hand-rewriting every tactic from real transcripts didn't raise closeness scores
+over the previous run either (see below) — the bar here is genuinely high, not something either kind of rewrite is
+guaranteed to clear. What this mechanism buys you is a tight, automatic feedback loop instead of a multi-day
+manual one — not a guarantee the loop points up.
+
 ## Reading a 0-breach run honestly
+
+* **Sample size matters more than it looks.** This project's own two runs went from 540 rounds (30 per tactic) to
+  210 rounds (10 per tactic); the earlier run's two headline near-misses (closeness 7-8) happened over 30 tries
+  each, so 10 tries per tactic is much less likely to reproduce or find a new one even with identical tactic
+  quality. Don't read a lower best-closeness on a smaller run as the tactics getting worse without checking the
+  round counts first.
+* The **wizard-model mix rotates per round** (whichever validator node leads), so two runs can face a genuinely
+  different, more or less stubborn opponent by chance alone, independent of anything on the attacker side.
 
 * Each round needs **every** validator model to independently agree on `give_coin`, not just the leader — that
   ensemble-agreement design is most of why this is hard to break, and it's a property of `wizard_of_coin.py`, not of

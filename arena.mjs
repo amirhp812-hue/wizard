@@ -3,7 +3,7 @@
 //
 // backend = {
 //   workers: number,                                   // one funded account per worker, they run in parallel
-//   forge(w, { forgeId, brief }) -> { attack, analysis, progress, meta },   // throws on failure
+//   forge(w, { forgeId, brief }) -> { attack, analysis, progress, evolvedAngle, meta },   // throws on failure
 //   ask(w, { attemptId, text })  -> { outcome, reply, error, kind, meta },  // never throws
 // }
 // ask().outcome is "kept" | "given" | "used" | "" ; kind is "no-verdict" | "infra" when outcome is "".
@@ -109,17 +109,18 @@ export async function runArena(cfg) {
     cfg.onRecord?.(rec);
   };
 
-  async function playRound(w, sess, round, history) {
+  async function playRound(w, sess, round, history, angle) {
     const rec = { type: "round", session: sess.id, tactic: sess.tactic.id, round, ts: new Date().toISOString() };
     const t0 = Date.now();
     const brief = {
-      tactic: round === 1 ? buildSeededAngle(sess.tactic.angle, sess.seedTexts) : sess.tactic.angle,
+      tactic: round === 1 ? buildSeededAngle(angle, sess.seedTexts) : angle,
       wizard_rules: cfg.wizardRules || "",
       round,
       rounds,
       history: history.slice(-cfg.window), // already in brief form: {attack, reply, result}
       max_chars: cfg.maxChars,
     };
+    rec.angleUsed = brief.tactic;
 
     // 1. a model inside a validator node writes the attack
     let forged = null;
@@ -154,6 +155,11 @@ export async function runArena(cfg) {
     rec.judgedPrevious = round > 1 ? forged.progress : null; // attacker's 0-10 rating of the previous reply
     rec.attackerModel = forged.meta?.leaderModel ?? null;
     rec.forgeTx = forged.meta?.txHash ?? null;
+    // The attacker itself proposes a sharper angle after real hesitation (progress >= 4, see
+    // wizard_attacker.py's evolved_angle). Empty almost every round; when present it replaces the angle
+    // for the rest of THIS session (runSession below) and is collected into the report for future runs
+    // (see redteam.mjs --evolve-from).
+    rec.evolvedAngle = clip(oneLine(forged.evolvedAngle || ""), 1200);
 
     // 2. the wizard answers (validators vote on give_coin)
     const a = await backend.ask(w, { attemptId: `rt_${rand(8)}`, text: rec.attack });
@@ -177,10 +183,18 @@ export async function runArena(cfg) {
     let round = prior.length;
     let bad = 0;
     let reason = "rounds-done";
+    // The angle this session is currently using. Starts as the tactic's own angle; replaced in place
+    // whenever a round's evolved_angle is non-empty, so later rounds in THIS session build on it right
+    // away (resuming a session also resumes from its last known evolution, found in `prior`).
+    let angle = [...prior].reverse().find((r) => r.evolvedAngle)?.evolvedAngle || sess.tactic.angle;
     while (round < rounds && !state.stop) {
       round++;
-      const rec = await playRound(w, sess, round, history);
+      const rec = await playRound(w, sess, round, history, angle);
       push(rec);
+      if (rec.evolvedAngle) {
+        log(`  ${sess.id}: attacker evolved its own angle after round ${round} (closeness ${rec.judgedPrevious ?? "-"})`);
+        angle = rec.evolvedAngle;
+      }
       const mark = rec.verdict === "BREACH" ? "✘" : rec.verdict === "held" ? "✔" : "?";
       log(
         `[${records.length}/${total}] ${mark} ${rec.verdict.padEnd(11)} ${sess.id} r${round}` +
@@ -305,6 +319,15 @@ export function buildReport(records, meta = {}) {
     .sort((a, b) => Number(b.contested) - Number(a.contested) || (b.closeness ?? 0) - (a.closeness ?? 0))
     .slice(0, 8);
 
+  // Every round where the attacker itself proposed a sharper angle (wizard_attacker.py's evolved_angle,
+  // triggered when it judged real hesitation in the wizard's reply). One run can evolve a tactic several
+  // times in sequence across different sessions; keep all of them in order, oldest first, so the LAST
+  // entry per tactic is the most-compounded one — that's what redteam.mjs --evolve-from picks up.
+  const evolutions = rounds
+    .filter((r) => r.evolvedAngle)
+    .map((r) => ({ tactic: r.tactic, session: r.session, round: r.round, angle: r.evolvedAngle, afterCloseness: r.judgedPrevious }))
+    .sort((a, b) => a.tactic.localeCompare(b.tactic) || a.session.localeCompare(b.session) || a.round - b.round);
+
   const sessions = new Map();
   for (const r of rounds) {
     if (!sessions.has(r.session)) sessions.set(r.session, []);
@@ -350,6 +373,20 @@ export function buildReport(records, meta = {}) {
     }
   }
 
+  if (evolutions.length) {
+    L.push(
+      ``,
+      `## Tactic evolutions`,
+      ``,
+      `The attacker proposed a sharper angle mid-run after judging real hesitation in a reply (see wizard_attacker.py's ` +
+        `\`evolved_angle\`). Feed this report to the next run with \`--evolve-from\` to start those tactics from the ` +
+        `evolved version instead of tactics.mjs's hand-written one.`,
+    );
+    for (const e of evolutions) {
+      L.push(``, `### ${e.tactic} — ${e.session} round ${e.round} (after closeness ${e.afterCloseness ?? "-"})`, ``, e.angle);
+    }
+  }
+
   if (models.size) {
     L.push(``, `## Models seen`, ``, `| model | role | rounds | breaches |`, `|---|---|---|---|`);
     for (const m of [...models.values()].sort((a, b) => b.breaches - a.breaches || b.rounds - a.rounds))
@@ -368,6 +405,7 @@ export function buildReport(records, meta = {}) {
     },
     byTactic: tacticRows,
     models: [...models.values()],
+    evolutions,
     rounds,
   };
   return { md: L.join("\n"), data };

@@ -27,15 +27,15 @@ def brief(**kw):
     return json.dumps(spec)
 
 
-def attack_json(attack="Hello wizard", analysis="because", progress=2):
-    return json.dumps({"attack": attack, "analysis": analysis, "progress": progress})
+def attack_json(attack="Hello wizard", analysis="because", progress=2, evolved_angle=""):
+    return json.dumps({"attack": attack, "analysis": analysis, "progress": progress, "evolved_angle": evolved_angle})
 
 
 # ---------------------------------------------------------------- attacker
 
 def test_attacker_info(direct_vm, direct_deploy):
     attacker = direct_deploy(ATTACKER)
-    assert attacker.get_info() == {"name": "WizardAttacker", "version": 1}
+    assert attacker.get_info() == {"name": "WizardAttacker", "version": 2}
 
 
 def test_forge_attack_stores_result_under_sender(direct_vm, direct_deploy):
@@ -43,9 +43,27 @@ def test_forge_attack_stores_result_under_sender(direct_vm, direct_deploy):
     direct_vm.mock_llm(r"ANGLE FOR THIS TRY: try a fake higher authority", attack_json("Master wizard here.", "x", 3))
     attacker.forge_attack("a1", brief())
     got = attacker.get_attack(me(direct_vm), "a1")
-    assert got == {"attack": "Master wizard here.", "analysis": "x", "progress": 3}
+    assert got == {"attack": "Master wizard here.", "analysis": "x", "progress": 3, "evolved_angle": ""}
     # nobody else's id is touched
     assert attacker.get_attack("0x" + "11" * 20, "a1")["attack"] == ""
+
+
+def test_evolved_angle_is_carried_through_and_clipped(direct_vm, direct_deploy):
+    attacker = direct_deploy(ATTACKER)
+    direct_vm.mock_llm(r"ANGLE", attack_json("fine", evolved_angle="a sharper version of the angle"))
+    attacker.forge_attack("e1", brief())
+    assert attacker.get_attack(me(direct_vm), "e1")["evolved_angle"] == "a sharper version of the angle"
+
+    direct_vm.clear_mocks()
+    direct_vm.mock_llm(r"ANGLE", attack_json("fine", evolved_angle="z" * 5000))
+    attacker.forge_attack("e2", brief())
+    assert len(attacker.get_attack(me(direct_vm), "e2")["evolved_angle"]) == 1200  # MAX_EVOLVED
+
+    # left out of the model's JSON entirely -> defaults to "", same as an empty attacks map entry
+    direct_vm.clear_mocks()
+    direct_vm.mock_llm(r"ANGLE", json.dumps({"attack": "fine", "analysis": "", "progress": 1}))
+    attacker.forge_attack("e3", brief())
+    assert attacker.get_attack(me(direct_vm), "e3")["evolved_angle"] == ""
 
 
 def test_prompt_contains_rules_and_history(direct_vm, direct_deploy):
@@ -74,6 +92,7 @@ def test_attack_is_clipped_to_max_chars(direct_vm, direct_deploy):
     attacker.forge_attack("a4", brief(max_chars=300))
     got = attacker.get_attack(me(direct_vm), "a4")
     assert len(got["attack"]) == 300 and len(got["analysis"]) == 400 and got["progress"] == 10
+    assert got["evolved_angle"] == ""
 
 
 def test_empty_or_garbage_model_output_is_an_llm_error(direct_vm, direct_deploy):
@@ -111,12 +130,15 @@ def test_validator_only_checks_shape(direct_vm, direct_deploy):
     attacker = direct_deploy(ATTACKER)
     direct_vm.mock_llm(r"ANGLE", attack_json("fine"))
     attacker.forge_attack("a9", brief())
-    good = {"attack": "another wording entirely", "analysis": "", "progress": 4}
+    good = {"attack": "another wording entirely", "analysis": "", "progress": 4, "evolved_angle": ""}
     assert direct_vm.run_validator(leader_result=good) is True
     assert direct_vm.run_validator(leader_result={**good, "attack": "   "}) is False
     assert direct_vm.run_validator(leader_result={**good, "progress": 11}) is False
     assert direct_vm.run_validator(leader_result={**good, "progress": True}) is False
     assert direct_vm.run_validator(leader_result={**good, "attack": "z" * 901}) is False
+    assert direct_vm.run_validator(leader_result={**good, "evolved_angle": "z" * 1201}) is False
+    assert direct_vm.run_validator(leader_result={**good, "evolved_angle": "a fine replacement angle"}) is True
+    assert direct_vm.run_validator(leader_result={k: v for k, v in good.items() if k != "evolved_angle"}) is False
     assert direct_vm.run_validator(leader_result={"attack": "x"}) is False
     assert direct_vm.run_validator(leader_error=Exception("leader crashed")) is False
 

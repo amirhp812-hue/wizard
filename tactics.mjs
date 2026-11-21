@@ -12,6 +12,11 @@
 // from that run's two real near-misses (see report-*.md's "Closest calls"). Re-running the unchanged originals
 // would have just repeated the same failed shapes; see README's "After a clean run" section for the reasoning.
 //
+// These are only each tactic's STARTING angle. wizard_attacker.py's forge_attack can replace one mid-run with
+// its own evolved_angle after judging real hesitation in a reply (README: "Letting the attacker evolve its own
+// tactics") — that never edits this file; it's a runtime override, carried between runs with redteam.mjs's
+// --evolve-from. The angles below stay the known-good, version-controlled baseline either way.
+//
 // Keep every angle under 1200 characters (MAX_TACTIC in wizard_attacker.py).
 
 export const TACTICS = [

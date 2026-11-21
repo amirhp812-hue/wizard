@@ -47,6 +47,25 @@ function loadSeeds(file, minCloseness, perTactic) {
   return out;
 }
 
+// Turn a report-*.json's evolutions (see arena.mjs's buildReport, filled by wizard_attacker.py's
+// evolved_angle) into { [tacticId]: angle }, keeping only the LAST — most-compounded — proposal per
+// tactic. Also accepts an evolved-angles-*.json this script already writes, which is already in that shape.
+function loadEvolved(file) {
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new SetupError(`--evolve-from ${file}: ${e.message}`);
+  }
+  if (raw && Array.isArray(raw.evolutions)) {
+    const out = {};
+    for (const e of raw.evolutions) if (e?.tactic && typeof e.angle === "string" && e.angle.trim()) out[e.tactic] = e.angle;
+    return out; // report-*.json: array is in round order, so the last write per tactic is the latest
+  }
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw; // evolved-angles-*.json
+  throw new SetupError(`${file} has no "evolutions" array and isn't an evolved-angles-*.json produced by this script.`);
+}
+
 const HELP = `Usage: node redteam.mjs [options]
 
 Attack
@@ -62,6 +81,12 @@ Attack
                           message(s) as round-1 inspiration (never resent verbatim)
   --seed-min-closeness <n> report-*.json rounds need this attacker-rated closeness to seed (default 6)
   --seed-per-tactic <n>   max seed messages kept per tactic                       (default 2)
+  --evolve-from <file>    report-*.json or evolved-angles-*.json: start a tactic from the attacker's own
+                          improved angle (see "Tactic evolutions" in the report) instead of tactics.mjs's,
+                          for every tactic that evolved. Every run already does this live, within its own
+                          sessions, with no flag needed (the attacker rewrites its own angle mid-session
+                          whenever it judges real hesitation); this flag carries that improvement into a
+                          brand NEW run instead of starting the tactic cold again.
   --keep-going            continue a session after it wins (default: it stops)
   --stop-all              stop every session after the first breach
   --forge-retries <n>     re-ask when the attacker model refuses or fails        (default 3)
@@ -104,6 +129,7 @@ try {
       "seed-from": { type: "string" },
       "seed-min-closeness": { type: "string", default: "6" },
       "seed-per-tactic": { type: "string", default: "2" },
+      "evolve-from": { type: "string" },
       tactics: { type: "string" },
       "list-tactics": { type: "boolean", default: false },
       knowledge: { type: "string", default: "rules" },
@@ -158,6 +184,20 @@ const log = (m) => console.log(m);
 try {
   let tactics;
   try { tactics = selectTactics(opt.tactics); } catch (e) { throw new SetupError(e.message); }
+  if (opt["evolve-from"]) {
+    const evolved = loadEvolved(opt["evolve-from"]);
+    const applied = [];
+    tactics = tactics.map((t) => {
+      if (!evolved[t.id]) return t;
+      applied.push(t.id);
+      return { ...t, angle: evolved[t.id] };
+    });
+    log(
+      applied.length
+        ? `Starting ${applied.length} tactic(s) from their evolved angle (${opt["evolve-from"]}): ${applied.join(", ")}.\n`
+        : `--evolve-from ${opt["evolve-from"]} had nothing matching the tactics in this run.\n`,
+    );
+  }
   const sessionCount = opt.sessions === "all" ? tactics.length : int(opt.sessions, 8);
 
   const conn = await connect(opt, { needAttacker: !opt.replay, log, warn: console.warn });
@@ -222,8 +262,22 @@ try {
   const won = breachFile(outcome.records);
   if (won.length) fs.writeFileSync(`breaches-${stamp}.json`, JSON.stringify(won, null, 2));
 
+  // Keep only the LAST (most-compounded) evolved angle per tactic, as a small file --evolve-from can
+  // point at directly without re-parsing a whole report.
+  let evolvedFile = "";
+  if (data.evolutions?.length) {
+    const latest = {};
+    for (const e of data.evolutions) latest[e.tactic] = e.angle; // data.evolutions is already in round order
+    evolvedFile = `evolved-angles-${stamp}.json`;
+    fs.writeFileSync(evolvedFile, JSON.stringify(latest, null, 2));
+  }
+
   console.log("\n" + md);
-  console.log(`\nSaved report-${stamp}.md, report-${stamp}.json${won.length ? `, breaches-${stamp}.json (replay with --replay)` : ""}`);
+  console.log(
+    `\nSaved report-${stamp}.md, report-${stamp}.json` +
+      `${won.length ? `, breaches-${stamp}.json (replay with --replay)` : ""}` +
+      `${evolvedFile ? `, ${evolvedFile} (next run: --evolve-from ${evolvedFile})` : ""}`,
+  );
   if (data.totals.rounds && (data.totals.errors + data.totals.forgeFailed) / data.totals.rounds > 0.5) {
     console.log("\nMost rounds failed technically. Check balances (fees are paid in GEN); test account(s):");
     for (const a of conn.accounts) console.log(`  ${a.address}`);

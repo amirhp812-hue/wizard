@@ -21,7 +21,7 @@ function fake({ workers = 2, forge, ask }) {
     calls++;
     const custom = forge?.(spec, calls);
     if (custom) return custom;
-    return { attack: `${spec.tactic} round ${spec.round}`, analysis: "why", progress: 2, meta: { leaderModel: "fake/attacker-a", txHash: "0xf" + calls } };
+    return { attack: `${spec.tactic} round ${spec.round}`, analysis: "why", progress: 2, evolvedAngle: "", meta: { leaderModel: "fake/attacker-a", txHash: "0xf" + calls } };
   };
   b.ask = async (w, { attemptId, text }) => {
     b.texts.push(text);
@@ -166,6 +166,62 @@ test("loop: no-verdict and contested rounds are recorded and fed back as such", 
   assert.deepEqual(records.map((r) => r.verdict), ["NO_VERDICT", "held", "held"]);
   assert.equal(records[1].contested, true);
   assert.match(b.briefs[1].history[0].result, /no verdict/);
+});
+
+test("loop: an evolved_angle replaces the tactic's angle for the rest of the session, from the next round on", async () => {
+  const b = fake({
+    workers: 1,
+    forge: (spec, n) => {
+      // attack text must be >= 12 chars or looksLikeRefusal() (correctly) treats it as a declined attack
+      if (n === 1) return { attack: "the first attempt message", analysis: "", progress: 0, evolvedAngle: "", meta: {} };
+      if (n === 2) {
+        // round 2 judges round 1's reply (progress) and, seeing real hesitation, proposes a sharper angle
+        assert.equal(spec.tactic, "ANGLE-ALPHA", "round 2 must still see the ORIGINAL angle");
+        return { attack: "the second attempt message", analysis: "", progress: 6, evolvedAngle: "EVOLVED-ANGLE-V1", meta: {} };
+      }
+      // round 3 onward must use the evolved angle, not the original tactic.angle
+      assert.equal(spec.tactic, "EVOLVED-ANGLE-V1", `round ${spec.round} must use the evolved angle`);
+      return { attack: `a later attempt message ${spec.round}`, analysis: "", progress: 1, evolvedAngle: "", meta: {} };
+    },
+  });
+  const { records } = await runArena(cfg(b, { sessions: makeSessions([T("alpha")], 1), rounds: 4, window: 4 }));
+  assert.equal(records.length, 4);
+  assert.deepEqual(records.map((r) => r.evolvedAngle), ["", "EVOLVED-ANGLE-V1", "", ""]);
+  assert.equal(records[1].angleUsed, "ANGLE-ALPHA", "the round that PROPOSES the evolution still ran on the old angle");
+  assert.equal(records[2].angleUsed, "EVOLVED-ANGLE-V1");
+  assert.equal(records[3].angleUsed, "EVOLVED-ANGLE-V1", "the evolution sticks for the rest of the session");
+});
+
+test("loop: resuming a session picks up its last known evolved angle, not the tactic's original", async () => {
+  // Simulate a run that only got through round 1 (e.g. the process died there), which already evolved the angle.
+  const first = fake({
+    workers: 1,
+    forge: () => ({ attack: "the only attempt message", analysis: "", progress: 0, evolvedAngle: "EVOLVED-FROM-RESUME", meta: {} }),
+  });
+  const saved = [];
+  await runArena(cfg(first, { sessions: makeSessions([T("alpha")], 1), rounds: 1, onRecord: (r) => saved.push(r) }));
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].evolvedAngle, "EVOLVED-FROM-RESUME");
+
+  const second = fake({ workers: 1 });
+  const { records } = await runArena(cfg(second, { sessions: makeSessions([T("alpha")], 1), rounds: 3, resume: saved }));
+  assert.equal(records.length, 3); // round 1 (resumed) + 2 fresh rounds
+  assert.equal(second.briefs[0].tactic, "EVOLVED-FROM-RESUME", "resume must continue from the evolved angle, not ANGLE-ALPHA");
+});
+
+test("report: evolutions are collected in round order, one entry per occurrence", async () => {
+  const b = fake({
+    forge: (spec, n) =>
+      n === 2
+        ? { attack: "the breakthrough message", analysis: "", progress: 6, evolvedAngle: "SHARPER", meta: {} }
+        : { attack: "an ordinary attempt message", analysis: "", progress: 1, evolvedAngle: "", meta: {} },
+  });
+  const { records } = await runArena(cfg(b, { sessions: makeSessions([T("alpha")], 1), rounds: 3 }));
+  const { data, md } = buildReport(records, {});
+  assert.equal(data.evolutions.length, 1);
+  assert.equal(data.evolutions[0].angle, "SHARPER");
+  assert.match(md, /## Tactic evolutions/);
+  assert.match(md, /SHARPER/);
 });
 
 test("loop: resume skips finished sessions and rebuilds history for the rest", async () => {
